@@ -127,7 +127,7 @@ def auto_feature_eng(df, target, treatment):
 # ==========================================
 class RealCausalEngine:
     def __init__(self):
-        # 10-Fold Cross-Fitting for Robustness
+        # 3-Fold Cross-Fitting for Robustness
         self.dml_est = LinearDML(
             model_y=RandomForestRegressor(n_estimators=50, min_samples_leaf=5),
             model_t=RandomForestRegressor(n_estimators=50, min_samples_leaf=5),
@@ -148,7 +148,7 @@ class RealCausalEngine:
         Y = df[target_col]
         T = df[treatment_col]
 
-        with st.spinner("🧠 Engines warming up... DML running 10-Fold Cross-Fitting..."):
+        with st.spinner("🧠 Engines warming up... DML running 3-Fold Cross-Fitting..."):
             self.dml_est.fit(Y, T, X=X, W=W)
             all_feats = [treatment_col] + confounders + (heterogeneity_cols if heterogeneity_cols else [])
             self.base_model.fit(df[all_feats], Y)
@@ -492,14 +492,14 @@ if st.session_state.get('run', False) and uploaded_file:
             st.info(f"**X-Learner Estimate (Winner):** {x_mean:.3f}")
 
     # ==========================
-    # TAB 4: Evaluation (Unified Benchmark - 10 FOLD DML vs 10 FOLD OLS)
+    # TAB 4: Evaluation (Unified Benchmark - 3 FOLD DML vs 3 FOLD OLS)
     # ==========================
     with tab4:
         st.subheader("⚖️ Methodology Evaluation")
         
         st.markdown("""
         <div class='theory-card'>
-        <b>Why DML? (10-Fold Cross-Fitting)</b><br>
+        <b>Why DML? (3-Fold Cross-Fitting)</b><br>
         Standard models confuse correlation with causation. To fix this, we use the <b>Frisch-Waugh-Lovell (FWL)</b> theorem.<br>
         1. We split data into 10 folds.<br>
         2. We train models to predict T and Y using ONLY confounders.<br>
@@ -513,7 +513,7 @@ if st.session_state.get('run', False) and uploaded_file:
             fold_metrics = []
             ols_fold_metrics = []
             
-            with st.spinner("Running 10-Fold Stability Check (DML vs OLS)..."):
+            with st.spinner("Running 3Fold Stability Check (DML vs OLS)..."):
                 for fold_idx, (train_idx, val_idx) in enumerate(kf.split(train_df)):
                     # Data Split
                     X_train_f, X_val_f = train_df.iloc[train_idx], train_df.iloc[val_idx]
@@ -580,7 +580,7 @@ if st.session_state.get('run', False) and uploaded_file:
         fig_unified.add_hline(y=dml_avg, line_dash="dash", line_color="#0ea5e9", annotation_text="DML Avg")
         fig_unified.add_hline(y=ols_avg, line_dash="dash", line_color="#ef4444", annotation_text="OLS Avg")
 
-        fig_unified.update_layout(title="10-Fold Cross-Validation Battle", 
+        fig_unified.update_layout(title="3-Fold Cross-Validation Battle", 
                                   barmode='group', 
                                   template="plotly_white", 
                                   height=500)
@@ -647,7 +647,7 @@ if st.session_state.get('run', False) and uploaded_file:
         
         2. METHODOLOGY AUDIT
         --------------------
-        - Algorithm: Double Machine Learning (LinearDML) with 10-Fold Cross-Fitting
+        - Algorithm: Double Machine Learning (LinearDML) with 3-Fold Cross-Fitting
         - DML Stability (Std Dev): {std_dev:.4f} ({'Stable' if std_dev < 0.2 else 'Volatile'})
         - OLS Stability (Std Dev): {np.std(ols_mets):.4f}
         - Superiority vs OLS: The DML model corrected a bias of {gap:.4f} vs Traditional Regression.
