@@ -132,7 +132,7 @@ class RealCausalEngine:
             model_y=RandomForestRegressor(n_estimators=50, min_samples_leaf=5),
             model_t=RandomForestRegressor(n_estimators=50, min_samples_leaf=5),
             random_state=42,
-            cv=10 # CHANGED TO 10
+            cv=10
         )
         self.base_model = XGBRegressor(n_estimators=100, random_state=42)
         self.features = []
@@ -186,7 +186,6 @@ def train_meta_learners(df, target_col, treatment_col, feature_cols):
 
     results = {}
     
-    # We use st.spinner inside the tab, but for background runs we suppress
     # 1. S-Learner (Base Line)
     learner_s = BaseSRegressor(learner=LinearRegression())
     cate_s = learner_s.fit_predict(X=X, treatment=w_binary, y=y)
@@ -233,10 +232,9 @@ with st.sidebar:
         st.markdown("### 2. Execution")
         if st.button("🚀 Run Causal Engine", type="primary", use_container_width=True):
             st.session_state['run'] = True
-            # Clear previous results if re-running
             st.session_state['cate_results'] = None
             st.session_state['fold_metrics'] = None
-            st.session_state['ols_coeff'] = None
+            st.session_state['ols_fold_metrics'] = None
     else:
         st.caption("Waiting for data...")
 
@@ -262,7 +260,7 @@ if st.session_state.get('run', False) and uploaded_file:
     # --- Tabs ---
     tab1, tab2, tab3, tab4, tab5 = st.tabs([
         "⚡ Insights & Elasticity", 
-        "🔮 What-If Simulator", 
+        "🔮 Sensitivity Simulator", 
         "⚔️ Model Battle", 
         "⚖️ Evaluation",
         "📋 Executive Report"
@@ -348,20 +346,36 @@ if st.session_state.get('run', False) and uploaded_file:
         st.plotly_chart(fig_hte, use_container_width=True)
 
     # ==========================
-    # TAB 2: Simulator
+    # TAB 2: Sensitivity Simulator
     # ==========================
     with tab2:
-        st.subheader("🔮 Counterfactual Simulator")
-        st.markdown("Answer **'What If?'** questions using Do-Calculus.")
+        st.subheader("🔮 Multi-Scenario Simulator")
+        st.markdown("Compare your **Proposed Strategy** against Higher and Lower price alternatives.")
         
         col_in, col_out = st.columns([1, 2])
         with col_in:
             st.markdown("### 🛠️ Adjust Strategy")
             curr_avg = float(test_df[treatment_col].mean())
-            new_price = st.slider("Proposed Treatment Value", 
+            
+            # 1. Main Price Slider
+            price_main = st.slider("Proposed Treatment Value (Center)", 
                                   min_value=float(test_df[treatment_col].min()), 
                                   max_value=float(test_df[treatment_col].max()), 
                                   value=curr_avg)
+            
+            # 2. Comparison Mode Selector
+            comp_mode = st.radio("Comparison Mode", ["Percentage (+/- %)", "Manual Prices ($)"], horizontal=True)
+            
+            if "Percentage" in comp_mode:
+                sensitivity = st.slider("Comparison Interval (+/- %)", min_value=1, max_value=20, value=5)
+                price_low = price_main * (1 - sensitivity/100)
+                price_high = price_main * (1 + sensitivity/100)
+                scenario_labels = [f"Lower (-{sensitivity}%)", "Proposed", f"Higher (+{sensitivity}%)"]
+            else:
+                c1, c2 = st.columns(2)
+                price_low = c1.number_input("Lower Price Scenario ($)", value=float(price_main*0.95))
+                price_high = c2.number_input("Higher Price Scenario ($)", value=float(price_main*1.05))
+                scenario_labels = ["Scenario A (Low)", "Proposed", "Scenario B (High)"]
             
             st.markdown("### 📦 Inventory Specs")
             lead_time = st.number_input("Lead Time (Days)", value=5)
@@ -370,33 +384,69 @@ if st.session_state.get('run', False) and uploaded_file:
             st.caption(f"Current Elasticity: **{avg_elasticity:.3f}**")
 
         with col_out:
+            # Run Predictions for all 3 Scenarios
+            # Main
             sim_df = test_df.copy()
-            sim_df[f'New_{treatment_col}'] = new_price
+            sim_df[f'New_{treatment_col}'] = price_main
+            cf_main = engine.predict_counterfactual(sim_df, f'New_{treatment_col}')
             
-            cf_demand = engine.predict_counterfactual(sim_df, f'New_{treatment_col}')
+            # High
+            sim_df_high = test_df.copy()
+            sim_df_high[f'New_{treatment_col}'] = price_high
+            cf_high = engine.predict_counterfactual(sim_df_high, f'New_{treatment_col}')
             
+            # Low
+            sim_df_low = test_df.copy()
+            sim_df_low[f'New_{treatment_col}'] = price_low
+            cf_low = engine.predict_counterfactual(sim_df_low, f'New_{treatment_col}')
+            
+            # Metrics Calculation
             total_act = test_df[target_col].sum()
-            total_sim = cf_demand.sum()
-            rev_act = total_act * curr_avg
-            rev_sim = total_sim * new_price
             
-            daily_std = np.std(cf_demand)
-            safety_stock = daily_std * 1.645 * np.sqrt(lead_time)
-            optimal_stock = (total_sim/len(sim_df) * lead_time) + safety_stock
-            
+            # Main
+            total_sim = cf_main.sum()
+            rev_sim = total_sim * price_main
+            std_main = np.std(cf_main)
+            opt_stock_main = (total_sim/len(sim_df) * lead_time) + (std_main * 1.645 * np.sqrt(lead_time))
+
+            # Low
+            total_sim_low = cf_low.sum()
+            rev_sim_low = total_sim_low * price_low
+            std_low = np.std(cf_low)
+            opt_stock_low = (total_sim_low/len(sim_df) * lead_time) + (std_low * 1.645 * np.sqrt(lead_time))
+
+            # High
+            total_sim_high = cf_high.sum()
+            rev_sim_high = total_sim_high * price_high
+            std_high = np.std(cf_high)
+            opt_stock_high = (total_sim_high/len(sim_df) * lead_time) + (std_high * 1.645 * np.sqrt(lead_time))
+
+            # Display Main Metrics (Top of Tab)
             s1, s2, s3 = st.columns(3)
-            s1.metric("Projected Demand", f"{total_sim:,.0f}", delta=f"{(total_sim-total_act):,.0f}")
-            s2.metric("Projected Value", f"${rev_sim:,.0f}", delta=f"${(rev_sim-rev_act):,.0f}")
-            s3.metric("Optimal Safety Stock", f"{optimal_stock:,.0f}", help="95% Service Level Requirement")
-            
+            s1.metric("Projected Demand (Center)", f"{total_sim:,.0f}", delta=f"{(total_sim-total_act):,.0f}")
+            s2.metric("Projected Value (Center)", f"${rev_sim:,.0f}", delta=f"${(rev_sim - (total_act*curr_avg)):,.0f}")
+            s3.metric("Optimal Safety Stock", f"{opt_stock_main:,.0f}", help="Based on Center Scenario")
+
+            # Plotting
             fig_cf = go.Figure()
-            fig_cf.add_trace(go.Scatter(y=test_df[target_col], name="Historical Actuals", 
-                                      line=dict(color='#cbd5e1', width=2)))
-            fig_cf.add_trace(go.Scatter(y=cf_demand, name="Counterfactual Prediction", 
-                                      line=dict(color='#0ea5e9', width=3)))
-            fig_cf.update_layout(title="Scenario Forecast", template="plotly_white", 
-                               hovermode="x unified", legend=dict(orientation="h", y=1.1))
+            fig_cf.add_trace(go.Scatter(y=test_df[target_col], name="Historical Actuals", line=dict(color='#cbd5e1', width=2)))
+            fig_cf.add_trace(go.Scatter(y=cf_low, name=f"{scenario_labels[0]} (${price_low:.2f})", line=dict(color='#10b981', width=2, dash='dash')))
+            fig_cf.add_trace(go.Scatter(y=cf_main, name=f"{scenario_labels[1]} (${price_main:.2f})", line=dict(color='#0ea5e9', width=4)))
+            fig_cf.add_trace(go.Scatter(y=cf_high, name=f"{scenario_labels[2]} (${price_high:.2f})", line=dict(color='#ef4444', width=2, dash='dash')))
+
+            fig_cf.update_layout(title="Scenario Comparison", template="plotly_white", hovermode="x unified", legend=dict(orientation="h", y=1.1))
             st.plotly_chart(fig_cf, use_container_width=True)
+            
+            # Comparison Table
+            st.markdown("#### 📊 Scenario Breakdown")
+            comp_data = {
+                "Scenario": scenario_labels,
+                "Price Point": [f"${price_low:.2f}", f"${price_main:.2f}", f"${price_high:.2f}"],
+                "Total Demand": [f"{total_sim_low:,.0f}", f"{total_sim:,.0f}", f"{total_sim_high:,.0f}"],
+                "Total Revenue": [f"${rev_sim_low:,.0f}", f"${rev_sim:,.0f}", f"${rev_sim_high:,.0f}"],
+                "Rec. Safety Stock": [f"{opt_stock_low:,.0f}", f"{opt_stock_main:,.0f}", f"{opt_stock_high:,.0f}"]
+            }
+            st.dataframe(pd.DataFrame(comp_data), use_container_width=True)
 
     # ==========================
     # TAB 3: Model Battle
@@ -405,7 +455,6 @@ if st.session_state.get('run', False) and uploaded_file:
         st.subheader("⚔️ Battle of the Meta-Learners")
         st.markdown("Compare specialized Causal architectures to validate the finding.")
         
-        # Check if results exist in Session State, otherwise Run
         if st.session_state.get('cate_results') is None:
              if st.button("🏁 Start Tournament", use_container_width=True):
                  meta_feats = all_confounders + ['Latent_Market_State']
@@ -413,7 +462,6 @@ if st.session_state.get('run', False) and uploaded_file:
                     cate_results = train_meta_learners(df_eng, target_col, treatment_col, meta_feats)
                     st.session_state['cate_results'] = cate_results
         
-        # Display Results if available
         if st.session_state.get('cate_results') is not None:
             cate_results = st.session_state['cate_results']
             
@@ -432,11 +480,19 @@ if st.session_state.get('run', False) and uploaded_file:
             fig_corr = px.imshow(cate_results.corr(), text_auto=True, color_continuous_scale='Blues')
             st.plotly_chart(fig_corr, use_container_width=True)
             
-            best_model_avg = cate_results['X-Learner'].mean()
-            st.success(f"**Tournament Result:** The X-Learner (Robust) estimates an average effect of **{best_model_avg:.3f}**.")
+            s_mean = cate_results['S-Learner'].mean()
+            t_mean = cate_results['T-Learner'].mean()
+            x_mean = cate_results['X-Learner'].mean()
+            
+            st.markdown("### 🏛️ Tournament Consensus")
+            if (s_mean > 0 and t_mean > 0 and x_mean > 0) or (s_mean < 0 and t_mean < 0 and x_mean < 0):
+                st.success(f"✅ **Unanimous Verdict:** All models agree on the direction. Robust Signal.")
+            else:
+                st.warning("⚠️ **Mixed Verdict:** Models disagree. Weak Signal.")
+            st.info(f"**X-Learner Estimate (Winner):** {x_mean:.3f}")
 
     # ==========================
-    # TAB 4: Evaluation (Unified Benchmark - 10 FOLD)
+    # TAB 4: Evaluation (Unified Benchmark - 10 FOLD DML vs 10 FOLD OLS)
     # ==========================
     with tab4:
         st.subheader("⚖️ Methodology Evaluation")
@@ -452,99 +508,132 @@ if st.session_state.get('run', False) and uploaded_file:
         </div>
         """, unsafe_allow_html=True)
         
-        # Calculate Logic only if not present
-        if st.session_state.get('fold_metrics') is None or st.session_state.get('ols_coeff') is None:
-            # A. Calculate 10 Folds
-            kf = KFold(n_splits=10, shuffle=True, random_state=42) # CHANGED TO 10
+        if st.session_state.get('fold_metrics') is None or st.session_state.get('ols_fold_metrics') is None:
+            kf = KFold(n_splits=10, shuffle=True, random_state=42)
             fold_metrics = []
-            with st.spinner("Running 10-Fold Stability Check..."):
+            ols_fold_metrics = []
+            
+            with st.spinner("Running 10-Fold Stability Check (DML vs OLS)..."):
                 for fold_idx, (train_idx, val_idx) in enumerate(kf.split(train_df)):
+                    # Data Split
                     X_train_f, X_val_f = train_df.iloc[train_idx], train_df.iloc[val_idx]
+                    
+                    # 1. DML Estimate (On Validation Fold)
                     fold_engine = RealCausalEngine()
                     fold_engine.train(X_train_f, target_col, treatment_col, all_confounders, heterogeneity_cols=['Latent_Market_State'])
                     fold_effects = fold_engine.get_causal_effect(X_val_f[['Latent_Market_State']])
                     fold_metrics.append(np.mean(fold_effects))
+                    
+                    # 2. OLS Estimate (On Training Fold - Standard CV Logic)
+                    # We fit OLS on K-1 folds and record the coefficient. This shows how much the OLS param jumps around.
+                    ols = LinearRegression()
+                    ols.fit(X_train_f[[treatment_col] + all_confounders], X_train_f[target_col])
+                    ols_fold_metrics.append(ols.coef_[0])
             
-            # B. Calculate OLS Baseline
-            ols = LinearRegression()
-            ols.fit(train_df[[treatment_col] + all_confounders], train_df[target_col])
-            ols_coeff = ols.coef_[0]
-            
-            # Store in Session
             st.session_state['fold_metrics'] = fold_metrics
-            st.session_state['ols_coeff'] = ols_coeff
+            st.session_state['ols_fold_metrics'] = ols_fold_metrics
         
-        # Retrieve Data
+        # Retrieve
         fold_metrics = st.session_state['fold_metrics']
-        ols_coeff = st.session_state['ols_coeff']
+        ols_fold_metrics = st.session_state['ols_fold_metrics']
+        
         dml_avg = np.mean(fold_metrics)
-
+        ols_avg = np.mean(ols_fold_metrics)
+        
         # UNIFIED VISUALIZATION
         st.subheader("🏆 Unified Benchmark: Stability & Performance")
-        st.caption("Comparing Individual DML Folds (Stability) vs. The Traditional OLS Baseline (Bias Check)")
+        st.caption("Head-to-Head: DML Folds (Blue) vs OLS Folds (Red). Are they fighting?")
 
         std_folds = np.std(fold_metrics)
+        std_ols = np.std(ols_fold_metrics)
+        
         col_m1, col_m2, col_m3 = st.columns(3)
         col_m1.metric("DML Stability (Std Dev)", f"{std_folds:.3f}", 
                       delta="Stable" if std_folds < 0.2 else "Volatile",
-                      help="Low standard deviation means the Causal finding is robust.")
-        col_m2.metric("DML Estimate (Avg)", f"{dml_avg:.3f}", 
-                      help="The final Causal Elasticity used for predictions.")
-        col_m3.metric("OLS Estimate (Traditional)", f"{ols_coeff:.3f}", 
-                      delta=f"{dml_avg-ols_coeff:.3f} Gap", delta_color="inverse",
-                      help="The Linear Regression baseline.")
+                      help="DML Variation across 10 folds.")
+        col_m2.metric("OLS Stability (Std Dev)", f"{std_ols:.3f}",
+                      help="OLS Variation across 10 folds (Usually low, but biased).")
+        col_m3.metric("Bias Gap (Average)", f"{dml_avg - ols_avg:.3f}", 
+                      delta_color="inverse",
+                      help="Difference between DML and OLS averages.")
 
-        # Chart Data
-        labels = [f"Fold {i+1}" for i in range(10)] + ["DML Average", "OLS (Traditional)"] # CHANGED RANGE TO 10
-        values = fold_metrics + [dml_avg, ols_coeff]
-        colors = ['#cbd5e1'] * 10 + ['#0ea5e9', '#ef4444'] # CHANGED TO 10 GREY BARS
+        # Grouped Bar Chart
+        fig_unified = go.Figure()
         
-        fig_unified = go.Figure(data=[go.Bar(
-            x=labels, y=values, marker_color=colors,
-            text=[f"{v:.3f}" for v in values], textposition='auto',
-        )])
+        # DML Bars
+        fig_unified.add_trace(go.Bar(
+            x=[f"Fold {i+1}" for i in range(10)],
+            y=fold_metrics,
+            name='DML (Causal)',
+            marker_color='#0ea5e9'
+        ))
         
-        fig_unified.add_hline(y=ols_coeff, line_dash="dash", line_color="#ef4444", annotation_text="OLS Baseline")
-        fig_unified.update_layout(title="Cross-Fitting Folds vs. Traditional Baseline", template="plotly_white", height=500)
+        # OLS Bars
+        fig_unified.add_trace(go.Bar(
+            x=[f"Fold {i+1}" for i in range(10)],
+            y=ols_fold_metrics,
+            name='OLS (Traditional)',
+            marker_color='#ef4444'
+        ))
+        
+        # Averages lines
+        fig_unified.add_hline(y=dml_avg, line_dash="dash", line_color="#0ea5e9", annotation_text="DML Avg")
+        fig_unified.add_hline(y=ols_avg, line_dash="dash", line_color="#ef4444", annotation_text="OLS Avg")
+
+        fig_unified.update_layout(title="10-Fold Cross-Validation Battle", 
+                                  barmode='group', 
+                                  template="plotly_white", 
+                                  height=500)
         st.plotly_chart(fig_unified, use_container_width=True)
         
-        if abs(dml_avg - ols_coeff) > 0.1:
-            st.info(f"💡 **Insight:** The DML Folds (Grey) are consistently different from the Red OLS Line. This gap represents the **Bias** Traditional AI misses.")
+        # Scorecard
+        st.markdown("### 🚦 Causal Scorecard")
+        sc1, sc2, sc3 = st.columns(3)
+        
+        if std_folds < 0.1:
+            sc1.success(f"✅ **Excellent Stability**\n\nDML Std: {std_folds:.3f}")
+        elif std_folds < 0.2:
+            sc1.warning(f"⚠️ **Acceptable Stability**\n\nDML Std: {std_folds:.3f}")
+        else:
+            sc1.error(f"🛑 **Unstable**\n\nDML Std: {std_folds:.3f}")
+            
+        bias_gap = abs(dml_avg - ols_avg)
+        if bias_gap > 0.1:
+            sc2.success(f"✅ **High Value Discovery**\n\nGap: {bias_gap:.3f}")
+        elif bias_gap > 0.05:
+            sc2.warning(f"⚠️ **Moderate Correction**\n\nGap: {bias_gap:.3f}")
+        else:
+            sc2.info(f"ℹ️ **Low Bias**\n\nGap: {bias_gap:.3f}")
+            
+        if dml_avg < 0:
+            sc3.success(f"✅ **Logical Direction**\n\nNegative Elasticity")
+        else:
+            sc3.error(f"🛑 **Anomalous**\n\nPositive Elasticity")
 
     # ==========================
-    # TAB 5: Report (INTEGRATED)
+    # TAB 5: Report (INTEGRATED & FIXED)
     # ==========================
     with tab5:
         st.subheader("📋 Executive Summary")
         
-        # AUTO-CALCULATE MISSING DATA FOR REPORT
-        # If user jumped straight to Report tab without clicking others
         if st.session_state.get('cate_results') is None:
              with st.spinner("Generating Tournament Results for Report..."):
                  meta_feats = all_confounders + ['Latent_Market_State']
                  st.session_state['cate_results'] = train_meta_learners(df_eng, target_col, treatment_col, meta_feats)
         
         if st.session_state.get('fold_metrics') is None:
-             with st.spinner("Generating Stability Metrics for Report..."):
-                 kf = KFold(n_splits=10, shuffle=True, random_state=42) # CHANGED TO 10
-                 f_mets = []
-                 for _, (t_ix, v_ix) in enumerate(kf.split(train_df)):
-                     fe = RealCausalEngine()
-                     fe.train(train_df.iloc[t_ix], target_col, treatment_col, all_confounders, heterogeneity_cols=['Latent_Market_State'])
-                     f_mets.append(np.mean(fe.get_causal_effect(train_df.iloc[v_ix][['Latent_Market_State']])))
-                 st.session_state['fold_metrics'] = f_mets
-                 
-                 ols_r = LinearRegression()
-                 ols_r.fit(train_df[[treatment_col] + all_confounders], train_df[target_col])
-                 st.session_state['ols_coeff'] = ols_r.coef_[0]
+             # Just trigger the calc from Tab 4 logic if missing
+             pass 
 
-        # Retrieve all vars
         cate_res = st.session_state['cate_results']
         winner_avg = cate_res['X-Learner'].mean()
-        f_mets = st.session_state['fold_metrics']
+        f_mets = st.session_state.get('fold_metrics', [0])
+        ols_mets = st.session_state.get('ols_fold_metrics', [0])
+        
+        dml_avg_r = np.mean(f_mets)
+        ols_avg_r = np.mean(ols_mets)
         std_dev = np.std(f_mets)
-        ols_c = st.session_state['ols_coeff']
-        gap = avg_elasticity - ols_c
+        gap = dml_avg_r - ols_avg_r
 
         report_txt = f"""
         CAUSAL AI EXECUTIVE SUMMARY
@@ -559,7 +648,8 @@ if st.session_state.get('run', False) and uploaded_file:
         2. METHODOLOGY AUDIT
         --------------------
         - Algorithm: Double Machine Learning (LinearDML) with 10-Fold Cross-Fitting
-        - Stability Check (Std Dev): {std_dev:.4f} ({'Stable' if std_dev < 0.2 else 'Volatile'})
+        - DML Stability (Std Dev): {std_dev:.4f} ({'Stable' if std_dev < 0.2 else 'Volatile'})
+        - OLS Stability (Std Dev): {np.std(ols_mets):.4f}
         - Superiority vs OLS: The DML model corrected a bias of {gap:.4f} vs Traditional Regression.
         
         3. MODEL TOURNAMENT RESULTS
@@ -570,9 +660,9 @@ if st.session_state.get('run', False) and uploaded_file:
         
         4. OPERATIONAL FORECAST
         -----------------------
-        Scenario: {treatment_col} adjusted to {new_price}
+        Scenario: {treatment_col} adjusted to {price_main:.2f}
         - Projected Total Outcome: {total_sim:,.0f}
-        - Recommended Safety Stock: {optimal_stock:,.0f} (95% Service Level)
+        - Recommended Safety Stock: {opt_stock_main:,.0f} (95% Service Level)
         
         5. STRATEGIC RECOMMENDATION
         ---------------------------
