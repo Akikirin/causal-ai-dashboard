@@ -132,7 +132,7 @@ class RealCausalEngine:
             model_y=RandomForestRegressor(n_estimators=50, min_samples_leaf=5),
             model_t=RandomForestRegressor(n_estimators=50, min_samples_leaf=5),
             random_state=42,
-            cv=10
+            cv=3
         )
         self.base_model = XGBRegressor(n_estimators=100, random_state=42)
         self.features = []
