@@ -501,7 +501,7 @@ if st.session_state.get('run', False) and uploaded_file:
         <div class='theory-card'>
         <b>Why DML? (3-Fold Cross-Fitting)</b><br>
         Standard models confuse correlation with causation. To fix this, we use the <b>Frisch-Waugh-Lovell (FWL)</b> theorem.<br>
-        1. We split data into 10 folds.<br>
+        1. We split data into 3 folds.<br>
         2. We train models to predict T and Y using ONLY confounders.<br>
         3. We subtract these predictions to get "Residuals" (The part of T and Y that History <i>cannot</i> explain).<br>
         4. The correlation between these Residuals is the <b>True Causal Effect</b>.
@@ -509,7 +509,7 @@ if st.session_state.get('run', False) and uploaded_file:
         """, unsafe_allow_html=True)
         
         if st.session_state.get('fold_metrics') is None or st.session_state.get('ols_fold_metrics') is None:
-            kf = KFold(n_splits=10, shuffle=True, random_state=42)
+            kf = KFold(n_splits=3, shuffle=True, random_state=42)
             fold_metrics = []
             ols_fold_metrics = []
             
@@ -550,9 +550,9 @@ if st.session_state.get('run', False) and uploaded_file:
         col_m1, col_m2, col_m3 = st.columns(3)
         col_m1.metric("DML Stability (Std Dev)", f"{std_folds:.3f}", 
                       delta="Stable" if std_folds < 0.2 else "Volatile",
-                      help="DML Variation across 10 folds.")
+                      help="DML Variation across 3 folds.")
         col_m2.metric("OLS Stability (Std Dev)", f"{std_ols:.3f}",
-                      help="OLS Variation across 10 folds (Usually low, but biased).")
+                      help="OLS Variation across 3 folds (Usually low, but biased).")
         col_m3.metric("Bias Gap (Average)", f"{dml_avg - ols_avg:.3f}", 
                       delta_color="inverse",
                       help="Difference between DML and OLS averages.")
@@ -562,7 +562,7 @@ if st.session_state.get('run', False) and uploaded_file:
         
         # DML Bars
         fig_unified.add_trace(go.Bar(
-            x=[f"Fold {i+1}" for i in range(10)],
+            x=[f"Fold {i+1}" for i in range(3)],
             y=fold_metrics,
             name='DML (Causal)',
             marker_color='#0ea5e9'
@@ -570,7 +570,7 @@ if st.session_state.get('run', False) and uploaded_file:
         
         # OLS Bars
         fig_unified.add_trace(go.Bar(
-            x=[f"Fold {i+1}" for i in range(10)],
+            x=[f"Fold {i+1}" for i in range(3)],
             y=ols_fold_metrics,
             name='OLS (Traditional)',
             marker_color='#ef4444'
